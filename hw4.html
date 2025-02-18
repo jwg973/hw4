@@ -1,0 +1,173 @@
+---
+title: "Conditional Probability"
+author: "Jon Garrow"
+date: "02/17/2025"
+
+format: 
+  html:  # You will quite likely want to change all but the last one, to taste
+    theme: superhero  
+    mainfont: monospace
+    highlight-style: github
+    title-block-banner: true
+    embed-resources: true
+---
+
+**Abstract:**
+
+This is a technical blog post of **both** an HTML file *and* [.qmd file](https://raw.githubusercontent.com/cd-public/D505/refs/heads/master/hws/src/cond.qmd) hosted on GitHub pages.
+
+# 0. Quarto Type-setting
+
+- This document is rendered with Quarto, and configured to embed an images using the `embed-resources` option in the header.
+- If you wish to use a similar header, here's is the format specification for this document:
+
+```email
+format: 
+  html:
+    embed-resources: true
+```
+
+# 1. Setup
+
+**Set Up Code:**
+
+```{r}
+sh <- suppressPackageStartupMessages
+sh(library(tidyverse))
+sh(library(caret))
+sh(library(fastDummies))
+sh(library(thematic))
+sh(library(naivebayes))
+sh(library(tidytext))
+wine <- readRDS(gzcon(url("https://github.com/cd-public/D505/raw/master/dat/pinot.rds")))
+```
+
+# 2. Conditional Probability
+
+Calculate the probability that a Pinot comes from Burgundy given it has the word 'fruit' in the description.
+
+$$
+P({\rm Burgundy}~|~{\rm Fruit})
+$$
+
+```{r}
+wine <- wine %>% mutate(
+  fruity=str_detect(description, "[Ff]ruit")) # Find fruit, create feature
+nrow(wine)
+wine %>% filter(fruity == TRUE) %>% nrow() # Check how fruity is wine
+
+fruitburg <- nrow(filter(wine, province=="Burgundy" & fruity))/nrow(wine) # Fruity and Burgundy wine perc of all wines
+p_fruity <- nrow(filter(wine, fruity))/nrow(wine) # Probability of fruity description
+fruitburg/p_fruity # Probability of Burgundy and fruity given fruity
+
+```
+
+# 3. Naive Bayes Algorithm
+
+We train a naive bayes algorithm to classify a wine's province using:
+1. An 80-20 train-test split.
+2. Three features engineered from the description
+3. 5-fold cross validation.
+
+We report Kappa after using the model to predict provinces in the holdout sample.
+
+```{r}
+# Set seed in case we need to recreate
+set.seed(505) 
+# partition wine df into 80/20 using province var
+windex <- createDataPartition(wine$province, p = 0.8, list = FALSE) 
+wine_train <- wine[windex, ] 
+wine_test <- wine[-windex, ]
+
+# Feature number 1 from description
+wine <- wine %>% mutate(
+  sus_french =str_detect(description, "[Cc]hateau") |
+              str_detect(description, "[Dd]omaine") |
+              str_detect(description, "[Vv]igne") |
+              str_detect(description, "[Ff]rench") |
+              str_detect(description, "[Ff]rance")
+)
+# Feature number 2 from description
+wine <- wine %>% mutate( 
+  tutti_frutti =str_detect(description, "[Bb]erry") |
+                str_detect(description, "[Cc]herry") |
+                str_detect(description, "[Pp]lum") |
+                str_detect(description, "[Ff]ig")
+)
+# Feature number 3 from description
+wine <- wine %>% mutate(
+  earthy =str_detect(description, "[Mm]ushroom") |
+          str_detect(description, "[Ff]orest") |
+          str_detect(description, "[Tt]ruffle") |
+          str_detect(description, "[Ll]eather") |
+          str_detect(description, "[Ss]ous bois") |
+          str_detect(description, "[Ee]arth") |
+          str_detect(description, "[Ss]oil")
+)
+# Train a naive bayes model with 5-fold cross-validation
+bayes_fit <- train(province ~ ., 
+             data = wine_train, 
+             method = "naive_bayes",
+             metric = "Kappa",
+             trControl = trainControl(method = "cv", number = 5))
+print(bayes_fit)
+```
+
+
+# 4. Frequency Differences
+
+We find the three words that most distinguish New York Pinots from all other Pinots.
+
+```{r}
+df <- wine # move to our dear friend df
+
+df <- df %>% # tokenize description field
+ unnest_tokens(word, description) 
+
+df <- df %>% # remove words from stop list
+  anti_join(stop_words)
+
+df <- df %>% # remove some other words that are not useful
+  filter(!word %in% c("wine", "pinot", "notes", "flavors", "aromas", "palate", "finish"))
+
+df <- df %>% # remove number words
+ filter(str_detect(word, "^[a-zA-Z]+$"))
+
+df <- df %>% # create n
+count(ID, word)
+
+df <- df %>%
+  group_by(ID)
+
+df <- df %>% # calculate freq of each word 
+  mutate(freq = n/sum(n))
+
+df <- df %>% # confirm more than 0
+  mutate(exists = (n>0))
+
+df <- df %>% 
+  ungroup()
+
+df <- df %>% # regroup by word
+  group_by(word)
+
+df <- df %>%
+  mutate(total = sum(n))
+
+df <- df %>% # rejoin with wine df to add province
+  left_join(select(wine, ID, province), by = "ID")
+
+top_words <- df %>% 
+  count(province, word) %>%
+  group_by(province) %>% 
+  top_n(50,n) %>% 
+  arrange(province, desc(n)) 
+
+nys_words <- top_words %>% # filter to New York
+  filter(province == "New_York") %>%
+  anti_join(top_words %>% filter(province != "New_York"), by = "word")
+
+nys_words %>% # view top 3 NY words
+  arrange(desc(n)) %>% head(3)
+
+```
